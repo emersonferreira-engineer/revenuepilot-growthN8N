@@ -1,0 +1,161 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "revenuepilot-analise",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "rp-webhook",
+      "name": "Webhook RevenuePilot",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -720,
+        0
+      ],
+      "webhookId": "015a7ca5-110a-48e6-98cd-a0f8dd0a07cd"
+    },
+    {
+      "parameters": {
+        "jsCode": "const p = $json.body ?? $json;\n\nconst req = [\"store_id\", \"periodo\", \"tipo_de_oportunidade\", \"metricas\", \"pergunta_de_analise\"];\nconst faltando = req.filter((k) => p[k] === undefined || p[k] === null);\nif (faltando.length) {\n  throw new Error(\"Payload inválido do RevenuePilot. Campos ausentes: \" + faltando.join(\", \"));\n}\n\nconst num = (v) => (v === null || v === undefined || v === \"\" ? null : Number(v));\nconst m = p.metricas ?? {};\nconst evidencias = Array.isArray(p.evidencias) ? p.evidencias : [];\n\nreturn [{ json: {\n  store_id: String(p.store_id),\n  tipo_de_oportunidade: String(p.tipo_de_oportunidade),\n  periodo: { inicio: p.periodo.inicio, fim: p.periodo.fim, comparacao: p.periodo.comparacao },\n  moeda: m.moeda ?? \"BRL\",\n  metricas: {\n    receita_atual: num(m.receita_atual), receita_anterior: num(m.receita_anterior),\n    pedidos_atual: num(m.pedidos_atual), pedidos_anterior: num(m.pedidos_anterior),\n    conversao_atual: num(m.conversao_atual), conversao_anterior: num(m.conversao_anterior),\n    investimento_midia: num(m.investimento_midia), cac_atual: num(m.cac_atual),\n    cac_anterior: num(m.cac_anterior), roas_atual: num(m.roas_atual),\n    impacto_estimado: num(m.impacto_estimado),\n  },\n  evidencias_texto: evidencias.map((e) => `${e.label}: ${e.value}`).join(\"\\\\n\"),\n  pergunta_de_analise: String(p.pergunta_de_analise),\n}}];"
+      },
+      "id": "rp-normalize",
+      "name": "Normalizar entrada",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -480,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Você é analista de crescimento de e-commerce DTC. Analise SOMENTE os dados abaixo, sem inventar métricas ou integrações. Responda em português.\n\nLoja: {{ $json.store_id }}\nTipo de oportunidade: {{ $json.tipo_de_oportunidade }}\nPeríodo: {{ $json.periodo.inicio }} a {{ $json.periodo.fim }} (comparado com {{ $json.periodo.comparacao }})\nMoeda: {{ $json.moeda }}\nMétricas: {{ JSON.stringify($json.metricas) }}\nEvidências:\n{{ $json.evidencias_texto }}\n\nPergunta: {{ $json.pergunta_de_analise }}\n\nResponda EXATAMENTE com um único objeto JSON contendo estas 8 chaves: diagnostico (string com o que os dados mostram, incluindo números), hipotese (string com a causa mais provável), acao_recomendada (string com próximo passo executável), impacto_estimado (string com premissa e cálculo, nunca fato), nivel_de_confianca (exatamente baixo, medio ou alto), dados_utilizados (array de strings), riscos (array de strings) e metricas_de_sucesso (array de strings). Liste explicitamente os dados usados e os riscos. Se os dados não sustentarem uma conclusão, use nivel_de_confianca baixo. Não inclua markdown nem texto fora do JSON.",
+        "batching": {}
+      },
+      "id": "rp-llm-chain",
+      "name": "Analisar com IA",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        -176,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "model": "gpt-oss:20b",
+        "options": {
+          "temperature": 0.1,
+          "numPredict": 2048
+        }
+      },
+      "id": "rp-ollama",
+      "name": "Ollama Cloud Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
+      "typeVersion": 1,
+      "position": [
+        -176,
+        224
+      ],
+      "credentials": {
+        "ollamaApi": {
+          "id": "N1nqiroP9cZZuLQB",
+          "name": "Ollama Cloud - SAM"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "function textoBruto(v) {\n  if (typeof v === \"string\") return v;\n  if (Array.isArray(v)) return v.map((x) => x?.text ?? x?.content ?? \"\").join(\"\");\n  return JSON.stringify(v);\n}\nfunction limpar(v) {\n  return v.trim().replace(/^```json\\\\s*/i, \"\").replace(/^```\\\\s*/i, \"\").replace(/```$/i, \"\").trim();\n}\nconst obrigatorios = [\"diagnostico\", \"hipotese\", \"acao_recomendada\", \"impacto_estimado\", \"nivel_de_confianca\", \"dados_utilizados\", \"riscos\", \"metricas_de_sucesso\"];\nconst lista = (v) => Array.isArray(v) ? v.map(String) : (v === undefined || v === null || v === \"\" ? [] : [String(v)]);\nconst niveis = [\"baixo\", \"medio\", \"alto\"];\n\nreturn $input.all().map((item) => {\n  const bruto = item.json.output ?? item.json.text ?? item.json.message?.content ?? item.json;\n  let dados;\n  try { dados = typeof bruto === \"string\" ? JSON.parse(limpar(bruto)) : bruto; }\n  catch (e) { throw new Error(`Resposta da IA não é um JSON válido. Conteúdo: ${textoBruto(bruto).slice(0, 500)}`); }\n  const faltando = obrigatorios.filter((k) => dados?.[k] === undefined);\n  if (faltando.length) throw new Error(\"Resposta fora do contrato. Ausentes: \" + faltando.join(\", \"));\n  const nivel = niveis.includes(String(dados.nivel_de_confianca).toLowerCase()) ? String(dados.nivel_de_confianca).toLowerCase() : \"baixo\";\n  return { json: {\n    diagnostico: String(dados.diagnostico), hipotese: String(dados.hipotese), acao_recomendada: String(dados.acao_recomendada),\n    impacto_estimado: String(dados.impacto_estimado), nivel_de_confianca: nivel,\n    dados_utilizados: lista(dados.dados_utilizados), riscos: lista(dados.riscos), metricas_de_sucesso: lista(dados.metricas_de_sucesso),\n  }};\n});"
+      },
+      "id": "rp-validate",
+      "name": "Validar saída",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        128,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "rp-response",
+      "name": "Responder ao RevenuePilot",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        400,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook RevenuePilot": {
+      "main": [
+        [
+          {
+            "node": "Normalizar entrada",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalizar entrada": {
+      "main": [
+        [
+          {
+            "node": "Analisar com IA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analisar com IA": {
+      "main": [
+        [
+          {
+            "node": "Validar saída",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama Cloud Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Analisar com IA",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validar saída": {
+      "main": [
+        [
+          {
+            "node": "Responder ao RevenuePilot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "f2fc494de039f2ecbbef0472085f68d581bf2fbc3defe3f38b320716d4ef1083"
+  }
+}
